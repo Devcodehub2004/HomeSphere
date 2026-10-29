@@ -1,0 +1,46 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node.js
+node_modules/
+dist/
+build/
+
+# Local storage and user uploads
+uploads/
+storage/
+data/
+*.db
+*.sqlite3
+
+# Local Docker overrides and volumes
+docker-compose.override.yml
+postgres_data/
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# HomeSphere private backups
+.homesphere-backups/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Database dumps and archived uploads
+*.dump
+*.sql.gz
+*.tar
+*.tar.gz

@@ -1,0 +1,103 @@
+/* Run against an isolated demo: HOMESPHERE_E2E_URL, HOMESPHERE_E2E_USERNAME,
+   HOMESPHERE_E2E_PASSWORD. Requires `npm install --no-save playwright`.
+   Uses only its own file; empty test folders remain for visual inspection. */
+const assert = require('node:assert/strict')
+const path = require('node:path')
+const { chromium, request } = require('playwright')
+;(async () => {
+  const baseURL = process.env.HOMESPHERE_E2E_URL || 'http://localhost:18080'
+  assert(process.env.HOMESPHERE_E2E_PASSWORD, 'Set HOMESPHERE_E2E_PASSWORD for an isolated test account')
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.HOMESPHERE_CHROMIUM || undefined })
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1100 }, reducedMotion: 'reduce' })
+  const page = await context.newPage()
+  page.setDefaultTimeout(12000)
+  const errors = []
+  page.on('pageerror', error => errors.push(error.message))
+  const shots = process.env.HOMESPHERE_SCREENSHOTS
+  const waitFor = async fn => { for (let i=0; i<60; i++) { if (await fn()) return; await new Promise(resolve=>setTimeout(resolve,100)) } throw new Error('Timed out waiting for UI state') }
+  try {
+    await page.goto(baseURL)
+    await page.getByLabel('Username', { exact: true }).fill(process.env.HOMESPHERE_E2E_USERNAME || 'demo')
+    await page.getByLabel('Password', { exact: true }).fill(process.env.HOMESPHERE_E2E_PASSWORD)
+    await page.getByRole('button', { name: 'Log in', exact: true }).click()
+    await page.getByRole('button', { name: 'New folder', exact: true }).waitFor()
+    const folderName = 'Interview demo ' + Date.now()
+    const fileName = 'demo-notes-' + Date.now() + '.txt'
+    await page.getByRole('button', { name: 'New folder', exact: true }).click()
+    await page.getByLabel('Folder name', { exact: true }).fill(folderName)
+    await page.getByRole('button', { name: 'Create folder', exact: true }).click()
+    await page.getByRole('button', { name: folderName, exact: true }).click()
+    await page.getByRole('button', { name: 'New folder', exact: true }).click()
+    await page.getByLabel('Folder name', { exact: true }).fill('Design')
+    await page.getByRole('button', { name: 'Create folder', exact: true }).click()
+    await page.getByRole('button', { name: 'Design', exact: true }).click()
+    await page.locator('input[type=file]').setInputFiles({ name: fileName, mimeType: 'text/plain', buffer: Buffer.from('HomeSphere interview demo') })
+    await page.getByRole('button', { name: `Share ${fileName}`, exact: true }).waitFor()
+    assert.equal(await page.locator('.folder-breadcrumbs').innerText().then(text=>text.replace(/\s+/g,' ')), `My files / ${folderName} / Design`)
+    await page.getByRole('button', { name: 'My files', exact: true }).click()
+    await waitFor(async () => await page.locator('.file-card').count() === 0)
+    await page.getByRole('searchbox', { name: 'Search files by name', exact: true }).fill(fileName.toUpperCase())
+    await page.getByRole('button', { name: `Share ${fileName}`, exact: true }).waitFor()
+    await page.getByRole('searchbox', { name: 'Search files by name', exact: true }).fill('absent-query')
+    await page.getByRole('heading', { name: 'No matching files' }).waitFor()
+    await page.getByRole('button', { name: 'Recent uploads', exact: true }).click()
+    await page.getByRole('button', { name: `Share ${fileName}`, exact: true }).click()
+    await page.getByRole('button', { name: 'Create link', exact: true }).click()
+    const link = page.getByLabel('New download link', { exact: true })
+    await link.waitFor()
+    const publicURL = await link.inputValue()
+    const anon = await request.newContext()
+    const publicFile = await anon.get(publicURL)
+    assert.equal(publicFile.status(), 200)
+    assert.equal(await publicFile.text(), 'HomeSphere interview demo')
+    assert.equal((await anon.get(baseURL+'/files')).status(),401)
+    if (shots) await page.screenshot({ path: path.join(shots, 'homesphere-sharing.png'), fullPage: true })
+    await page.getByRole('button', { name: 'Revoke', exact: true }).first().click()
+    await page.locator('.share-list').getByText(/^Revoked/).waitFor()
+    assert.equal((await anon.get(publicURL)).status(),404)
+    await page.getByRole('button', { name: 'Close', exact: true }).click()
+    // Keyboard-only folder dialog close returns focus to its opener.
+    await page.getByRole('button', { name: 'Folders', exact: true }).click()
+    await page.getByRole('button', { name: 'New folder', exact: true }).click()
+    await page.keyboard.press('Escape')
+    assert.equal(await page.getByRole('button', { name: 'New folder', exact: true }).evaluate(el=>el===document.activeElement),true)
+    await page.getByRole('button', { name: 'Recent uploads', exact: true }).click()
+    await page.getByRole('button', { name: `Delete ${fileName}`, exact: true }).click()
+    await page.getByRole('button', { name: 'Move to bin', exact: true }).click()
+    await page.getByRole('button', { name: /Recycle bin/ }).click()
+    await page.getByRole('button', { name: `Restore ${fileName}`, exact: true }).waitFor()
+    await page.getByRole('button', { name: `Restore ${fileName}`, exact: true }).click()
+    await page.getByRole('heading', { name: 'Your recycle bin is empty' }).waitFor()
+    await page.getByRole('button', { name: 'Recent uploads', exact: true }).click()
+    const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('link', { name: `Download ${fileName}`, exact: true }).click()])
+    assert.equal(download.suggestedFilename(),fileName)
+    if (shots) await page.screenshot({ path: path.join(shots, 'homesphere-desktop.png'), fullPage: true })
+    for (const viewport of [{width:375,height:812},{width:812,height:375},{width:768,height:1024}]) {
+      await page.setViewportSize(viewport)
+      await page.locator('#files').scrollIntoViewIfNeeded()
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth),true,`Page overflows at ${viewport.width}`)
+      for (const layout of ['List view', 'Grid view']) {
+        await page.getByRole('button', { name: layout, exact: true }).click()
+        for (const button of await page.locator('.file-actions .icon-button').all()) {
+          const box = await button.boundingBox()
+          const card = await button.evaluate(el=>{ const r=el.closest('.file-card').getBoundingClientRect(); return {left:r.left,right:r.right} })
+          assert(box.width>=44 && box.height>=44, `Small file action at ${viewport.width}: ${JSON.stringify(box)}`)
+          assert(box.x>=card.left && box.x+box.width<=card.right, `Clipped file action in ${layout} at ${viewport.width}`)
+        }
+      }
+      if (shots && viewport.width===375) await page.screenshot({ path: path.join(shots,'homesphere-mobile.png'), fullPage: true })
+    }
+    await page.getByRole('button', { name: `Delete ${fileName}`, exact: true }).click()
+    await page.getByRole('button', { name: 'Move to bin', exact: true }).click()
+    await page.getByRole('button', { name: /Recycle bin/ }).click()
+    await page.getByRole('button', { name: `Permanently delete ${fileName}`, exact: true }).click()
+    await page.getByRole('button', { name: 'Delete forever', exact: true }).click()
+    await page.getByRole('heading', { name: 'Your recycle bin is empty' }).waitFor()
+    await page.getByRole('button', { name: 'Sign out', exact: true }).click()
+    await page.getByRole('button', { name: 'Log in', exact: true }).waitFor()
+    assert.deepEqual(errors,[])
+    await anon.dispose()
+    console.log('PASS: login, nested folders, upload, breadcrumbs, global search, recent uploads, public download/revoke, keyboard dialog, recycle/restore/download/purge, logout, responsive layouts, reduced motion and no page errors')
+  } finally { await browser.close() }
+})().catch(error=>{console.error(error);process.exitCode=1})
+
